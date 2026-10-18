@@ -1,0 +1,65 @@
+# 在 GitHub Actions 上构建 Server 镜像并推到 GHCR，NAS 只负责 pull。
+#
+# 用法：
+#   1. 提交到 fork 的默认分支（main）——workflow_dispatch 只登记默认分支上的工作流
+#   2. fork 的 Actions 页面 → Build server image → Run workflow
+#   3. 产物：
+#        ghcr.io/frozensoulzero/agents-anywhere-server:latest
+#        ghcr.io/frozensoulzero/agents-anywhere-server:<sha>   ← 回滚用
+#
+# 首次构建后包默认 private。两条路：
+#   - 匿名 pull：GitHub → 你的 Packages → 该包 → Package settings → Change visibility → Public
+#   - 保持 private：NAS 上 docker login ghcr.io -u FrozenSoulZero --password-stdin（PAT 需 read:packages）
+#
+# 注意镜像名必须全小写，所以下面用 bash 的 ${VAR,,} 把 owner 转成小写。
+
+name: Build server image
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve lowercase image name
+        id: image
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "name=ghcr.io/${owner}/agents-anywhere-server" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=sha,prefix=,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: server
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
